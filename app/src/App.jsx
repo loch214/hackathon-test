@@ -747,13 +747,15 @@ function App() {
         </div>
 
         <nav className="nav">
-          {(currentUser.role === 'staff' ? ['Overview', 'Fleet', 'Bookings', 'Maintenance'] : ['Overview', 'Vehicles', 'My rentals', 'Profile']).map((item, index) => {
+          {(currentUser.role === 'staff' ? ['Overview', 'Fleet', 'Bookings', 'Maintenance'] : ['Overview', 'Vehicles', 'My rentals', 'Profile']).map((item) => {
             const key = item.toLowerCase().replace(/\s+/g, '-')
+            const isActive = activeView === key
+
             return (
               <button
                 key={item}
                 type="button"
-                className={activeView === key && index === 0 || activeView === key ? 'nav-item active' : 'nav-item'}
+                className={isActive ? 'nav-item active' : 'nav-item'}
                 onClick={() => setActiveView(key)}
               >
                 {item}
