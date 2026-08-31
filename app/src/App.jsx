@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { initialUsers, initialVehicles, initialBookings } from './appData'
-import { authenticateUser, createBooking, getAvailableVehicles } from './lib/rentalLogic'
+import { authenticateUser, createBooking, getAvailableVehicles, getDemoCredentials } from './lib/rentalLogic'
 
 const storageKey = 'driveflow-rental-state-v1'
 
@@ -65,9 +65,13 @@ function App() {
   })
 
   const [loginForm, setLoginForm] = useState({ email: 'staff@driveflow.com', password: 'staff123' })
+  const [selectedRole, setSelectedRole] = useState('staff')
   const [loginError, setLoginError] = useState('')
   const [flashMessage, setFlashMessage] = useState('Welcome back')
   const [activeView, setActiveView] = useState('overview')
+  const [isLoading, setIsLoading] = useState(true)
+  const [apiError, setApiError] = useState('')
+  const bookingFormRef = useRef(null)
   const [bookingForm, setBookingForm] = useState({
     vehicleId: 'V-2041',
     pickupDate: '2026-09-03',
@@ -77,6 +81,46 @@ function App() {
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify({ users, vehicles, bookings, currentUser }))
   }, [users, vehicles, bookings, currentUser])
+
+  useEffect(() => {
+    let mounted = true
+
+    async function loadData() {
+      try {
+        setIsLoading(true)
+        const [overviewRes, vehiclesRes, bookingsRes] = await Promise.all([
+          fetch('http://localhost:3001/api/overview'),
+          fetch('http://localhost:3001/api/vehicles'),
+          fetch('http://localhost:3001/api/bookings'),
+        ])
+
+        if (!overviewRes.ok || !vehiclesRes.ok || !bookingsRes.ok) {
+          throw new Error('Failed to load data from the API.')
+        }
+
+        const overviewData = await overviewRes.json()
+        const nextVehicles = await vehiclesRes.json()
+        const nextBookings = await bookingsRes.json()
+
+        if (!mounted) return
+
+        setVehicles(nextVehicles)
+        setBookings(nextBookings)
+        setFlashMessage(overviewData.metrics?.[0] ? 'Live data synced from the API.' : 'Welcome back')
+      } catch (error) {
+        if (!mounted) return
+        setApiError('Using local demo data because the API is unavailable.')
+      } finally {
+        if (mounted) setIsLoading(false)
+      }
+    }
+
+    loadData()
+
+    return () => {
+      mounted = false
+    }
+  }, [])
 
   const availableVehicles = useMemo(() => getAvailableVehicles(vehicles), [vehicles])
   const staffMetrics = useMemo(() => {
@@ -102,19 +146,44 @@ function App() {
     [vehicles],
   )
 
-  function handleLogin(event) {
+  async function handleLogin(event) {
     event.preventDefault()
 
-    const user = authenticateUser(loginForm)
-    if (!user) {
-      setLoginError('Invalid email or password. Try staff@driveflow.com / staff123')
-      return
-    }
+    const demoCredentials = getDemoCredentials(selectedRole)
+    const finalLoginForm = demoCredentials ? { ...demoCredentials } : loginForm
 
-    setCurrentUser(user)
-    setLoginError('')
-    setFlashMessage(`${user.name} logged in successfully.`)
-    setActiveView('overview')
+    try {
+      const response = await fetch('http://localhost:3001/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(finalLoginForm),
+      })
+
+      if (!response.ok) {
+        throw new Error('Login failed')
+      }
+
+      const payload = await response.json()
+      const user = authenticateUser(finalLoginForm)
+
+      setLoginForm(finalLoginForm)
+      setCurrentUser(user || { ...payload.user, name: payload.user.name })
+      setLoginError('')
+      setFlashMessage(`${user?.name || payload.user.name} logged in successfully.`)
+      setActiveView('overview')
+      return
+    } catch {
+      const user = authenticateUser(finalLoginForm)
+      if (!user) {
+        setLoginError('Invalid email or password. Try the demo credentials shown below.')
+        return
+      }
+
+      setCurrentUser(user)
+      setLoginError('')
+      setFlashMessage(`${user.name} logged in successfully.`)
+      setActiveView('overview')
+    }
   }
 
   function handleLogout() {
@@ -122,67 +191,140 @@ function App() {
     setFlashMessage('You have been logged out.')
   }
 
-  function handleReserveVehicle(vehicleId) {
+  function handleQuickBooking() {
+    setActiveView('overview')
+    setFlashMessage('Booking form opened.')
+
+    requestAnimationFrame(() => {
+      bookingFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
+
+  async function handleReserveVehicle(vehicleId) {
     if (!currentUser) return
 
-    const result = createBooking({
-      vehicles,
-      bookings,
-      vehicleId,
-      customerName: currentUser.name,
-      pickupDate: '2026-09-05',
-      returnDate: '2026-09-09',
-    })
+    try {
+      const response = await fetch('http://localhost:3001/api/bookings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vehicleId,
+          customerName: currentUser.name,
+          pickupDate: '2026-09-05',
+          returnDate: '2026-09-09',
+        }),
+      })
 
-    if (!result.success) {
-      setFlashMessage(result.error)
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result.message || 'Booking failed.')
+      }
+
+      setVehicles(result.vehicles)
+      setBookings(result.bookings)
+      setFlashMessage(`Reservation created for ${vehicleNameMap[vehicleId]}.`)
       return
-    }
+    } catch (error) {
+      const result = createBooking({
+        vehicles,
+        bookings,
+        vehicleId,
+        customerName: currentUser.name,
+        pickupDate: '2026-09-05',
+        returnDate: '2026-09-09',
+      })
 
-    setVehicles(result.vehicles)
-    setBookings(result.bookings)
-    setFlashMessage(`Reservation created for ${vehicleNameMap[vehicleId]}.`)
+      if (!result.success) {
+        setFlashMessage(result.error)
+        return
+      }
+
+      setVehicles(result.vehicles)
+      setBookings(result.bookings)
+      setFlashMessage(`Reservation created for ${vehicleNameMap[vehicleId]}.`)
+    }
   }
 
-  function handleStaffBookingSubmit(event) {
+  async function handleStaffBookingSubmit(event) {
     event.preventDefault()
 
-    const result = createBooking({
-      vehicles,
-      bookings,
-      vehicleId: bookingForm.vehicleId,
-      customerName: 'Walk-in customer',
-      pickupDate: bookingForm.pickupDate,
-      returnDate: bookingForm.returnDate,
-    })
+    try {
+      const response = await fetch('http://localhost:3001/api/bookings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vehicleId: bookingForm.vehicleId,
+          customerName: 'Walk-in customer',
+          pickupDate: bookingForm.pickupDate,
+          returnDate: bookingForm.returnDate,
+        }),
+      })
 
-    if (!result.success) {
-      setFlashMessage(result.error)
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result.message || 'Booking failed.')
+      }
+
+      setVehicles(result.vehicles)
+      setBookings(result.bookings)
+      setFlashMessage(`Booking ${result.booking.id} created successfully.`)
       return
-    }
+    } catch (error) {
+      const result = createBooking({
+        vehicles,
+        bookings,
+        vehicleId: bookingForm.vehicleId,
+        customerName: 'Walk-in customer',
+        pickupDate: bookingForm.pickupDate,
+        returnDate: bookingForm.returnDate,
+      })
 
-    setVehicles(result.vehicles)
-    setBookings(result.bookings)
-    setFlashMessage(`Booking ${result.booking.id} created successfully.`)
+      if (!result.success) {
+        setFlashMessage(result.error)
+        return
+      }
+
+      setVehicles(result.vehicles)
+      setBookings(result.bookings)
+      setFlashMessage(`Booking ${result.booking.id} created successfully.`)
+    }
   }
 
-  function handleReturnBooking(bookingId) {
+  async function handleReturnBooking(bookingId) {
     const targetBooking = bookings.find((booking) => booking.id === bookingId)
     if (!targetBooking) return
 
-    setBookings((previous) =>
-      previous.map((booking) =>
-        booking.id === bookingId ? { ...booking, status: 'completed' } : booking,
-      ),
-    )
+    try {
+      const response = await fetch(`http://localhost:3001/api/bookings/${bookingId}/return`, {
+        method: 'POST',
+      })
 
-    setVehicles((previous) =>
-      previous.map((vehicle) =>
-        vehicle.id === targetBooking.vehicleId ? { ...vehicle, status: 'available' } : vehicle,
-      ),
-    )
+      const result = await response.json()
+      if (!response.ok) {
+        throw new Error(result.message || 'Return failed.')
+      }
 
-    setFlashMessage(`Vehicle ${targetBooking.vehicleId} marked as returned.`)
+      setBookings(result.bookings)
+      setVehicles(result.vehicles)
+      setFlashMessage(`Vehicle ${targetBooking.vehicleId} marked as returned.`)
+      return
+    } catch {
+      setBookings((previous) =>
+        previous.map((booking) =>
+          booking.id === bookingId ? { ...booking, status: 'completed' } : booking,
+        ),
+      )
+
+      setVehicles((previous) =>
+        previous.map((vehicle) =>
+          vehicle.id === targetBooking.vehicleId ? { ...vehicle, status: 'available' } : vehicle,
+        ),
+      )
+
+      setFlashMessage(`Vehicle ${targetBooking.vehicleId} marked as returned.`)
+    }
   }
 
   if (!currentUser) {
@@ -203,14 +345,30 @@ function App() {
           </div>
 
           <div className="role-grid">
-            <div className="role-pill active">
+            <button
+              type="button"
+              className={selectedRole === 'staff' ? 'role-pill active' : 'role-pill'}
+              onClick={() => {
+                const demo = getDemoCredentials('staff')
+                setSelectedRole('staff')
+                setLoginForm(demo)
+              }}
+            >
               <span>Staff</span>
               <small>Operations</small>
-            </div>
-            <div className="role-pill">
+            </button>
+            <button
+              type="button"
+              className={selectedRole === 'customer' ? 'role-pill active' : 'role-pill'}
+              onClick={() => {
+                const demo = getDemoCredentials('customer')
+                setSelectedRole('customer')
+                setLoginForm(demo)
+              }}
+            >
               <span>Customer</span>
               <small>Bookings</small>
-            </div>
+            </button>
           </div>
 
           <form className="auth-form" onSubmit={handleLogin}>
@@ -323,7 +481,7 @@ function App() {
           </div>
         </div>
 
-        <div className="panel">
+        <div className="panel" ref={bookingFormRef}>
           <div className="panel-header">
             <div>
               <p className="eyebrow">Quick action</p>
@@ -775,14 +933,17 @@ function App() {
           </div>
 
           <div className="topbar-actions">
-            <button type="button" className="ghost-btn">Export</button>
-            <button type="button" className="primary-btn">New booking</button>
+            <button type="button" className="ghost-btn" onClick={() => setFlashMessage('Export is ready for the next sprint.')}>Export</button>
+            <button type="button" className="primary-btn" onClick={handleQuickBooking}>New booking</button>
           </div>
         </header>
 
         {flashMessage ? <div className="flash-banner">{flashMessage}</div> : null}
+        {apiError ? <div className="error-banner">{apiError}</div> : null}
+        {isLoading ? <div className="empty-state">Loading fleet data…</div> : null}
 
-        {currentUser.role === 'staff' ? renderStaffContent() : renderCustomerContent()}
+        {!isLoading && currentUser.role === 'staff' ? renderStaffContent() : null}
+        {!isLoading && currentUser.role !== 'staff' ? renderCustomerContent() : null}
       </main>
     </div>
   )

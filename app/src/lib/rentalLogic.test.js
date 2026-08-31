@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { authenticateUser, createBooking, getAvailableVehicles } from './rentalLogic'
+import { authenticateUser, createBooking, getAvailableVehicles, getDemoCredentials } from './rentalLogic'
 
 describe('rentalLogic', () => {
   it('authenticates a staff account with valid credentials', () => {
@@ -16,6 +16,18 @@ describe('rentalLogic', () => {
     ]
 
     expect(getAvailableVehicles(vehicles).map((vehicle) => vehicle.id)).toEqual(['V-1'])
+  })
+
+  it('provides the default demo credentials for each role', () => {
+    expect(getDemoCredentials('staff')).toEqual({
+      email: 'staff@driveflow.com',
+      password: 'staff123',
+    })
+
+    expect(getDemoCredentials('customer')).toEqual({
+      email: 'customer@driveflow.com',
+      password: 'customer123',
+    })
   })
 
   it('creates a booking for an available vehicle and calculates total', () => {
